@@ -47,6 +47,9 @@ export interface MetaApp {
   forwards: ForwardDest[];
   storeEvents: boolean;       // true = keep history in panel; false = relay-only (no history)
   embedEnabled: boolean;      // true = allow public embeddable connect buttons (outside the panel)
+  loginEnabled: boolean;          // true = allow "Login with Facebook" for external sites (WHMCS, etc.)
+  loginRedirectUris: string[];    // allow-list of external site callback URLs for the login flow
+  loginApiSecret: string;         // server-only; shared secret external backends use to exchange a login code for the profile
   createdAt: string;
   updatedAt?: string;
 }
@@ -67,10 +70,14 @@ export interface MetaAppPublic {
   forwards: ForwardDest[];
   storeEvents: boolean;
   embedEnabled: boolean;
+  loginEnabled: boolean;
+  loginRedirectUris: string[];
+  hasLoginApiSecret: boolean;
   channelCount: number;
   createdAt: string;
   webhookUrls: { unified: string; waba: string; messenger: string; instagram: string };
   redirectUri: string;
+  loginUrls: { authorize: string; token: string };
 }
 
 /** Effective per-app config used by the OAuth flows (instagram falls back to fb). */
@@ -137,4 +144,22 @@ export interface OAuthState {
   lang: string;
   nonce: string;
   iat: number;
+}
+
+/** Decoded state for the Facebook Login (site authentication) flow. */
+export interface LoginState {
+  appId: string;
+  redirectUri: string; // the external site's callback URL (validated against the app's allow-list)
+  siteState: string;   // opaque state the external site asked to get back untouched
+  lang: string;
+  nonce: string;
+  iat: number;
+}
+
+/** Profile resolved from Facebook after a successful Login flow. */
+export interface FacebookLoginProfile {
+  id: string;
+  name: string;
+  email?: string;
+  picture?: string;
 }

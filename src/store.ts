@@ -21,9 +21,10 @@
 // Atomic writes via temp file + rename; debounced async save.
 // Stores: settings (global), apps (multi-app), channels, events.
 // ─────────────────────────────────────────────────────────────────────────────
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { Channel, MetaApp, WebhookEvent } from "./types";
+import { Channel, FacebookLoginProfile, MetaApp, WebhookEvent } from "./types";
 
 export const DATA_DIR = path.join(__dirname, "..", "data");
 
@@ -179,6 +180,35 @@ export function listEvents(sinceTs?: string, limit = 100): WebhookEvent[] {
 export function clearEvents(): void {
   events = [];
   writeJson("events.json", events, 0);
+}
+
+// ─── Facebook Login codes (one-time, in-memory only) ──────────────────────────
+// Bridges the browser redirect (hub → external site) to the site's server-to-
+// server token exchange. Deliberately NOT persisted to disk: these are only
+// meant to survive the few seconds between the two hops, and never need to
+// outlive a process restart.
+
+interface PendingLoginCode { appId: string; profile: FacebookLoginProfile; expiresAt: number }
+const LOGIN_CODE_TTL_MS = 2 * 60 * 1000; // 2 min
+const loginCodes = new Map<string, PendingLoginCode>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, entry] of loginCodes) if (entry.expiresAt <= now) loginCodes.delete(code);
+}, 60_000).unref();
+
+export function createLoginCode(appId: string, profile: FacebookLoginProfile): string {
+  const code = crypto.randomBytes(24).toString("hex");
+  loginCodes.set(code, { appId, profile, expiresAt: Date.now() + LOGIN_CODE_TTL_MS });
+  return code;
+}
+
+/** One-time use: the code is removed whether or not it matches, so it can't be replayed. */
+export function consumeLoginCode(code: string, appId: string): FacebookLoginProfile | null {
+  const entry = loginCodes.get(code);
+  loginCodes.delete(code);
+  if (!entry || entry.expiresAt <= Date.now() || entry.appId !== appId) return null;
+  return entry.profile;
 }
 
 /** Aggregate counts for the overview cards. */

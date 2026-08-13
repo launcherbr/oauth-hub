@@ -89,6 +89,23 @@ export function appRedirectUri(): string {
   return `${PUBLIC_URL}/connect/instagram/callback`;
 }
 
+export function loginCallbackUri(): string {
+  // Fixed, app-agnostic callback registered once in each Facebook App's OAuth
+  // settings — the target app is carried in the signed login state, same as
+  // the Instagram redirect above.
+  return `${PUBLIC_URL}/login/facebook/callback`;
+}
+
+/** URL an external site (WHMCS, etc.) redirects the browser to in order to start
+ *  a "Login with Facebook" flow through this hub. */
+export function loginAuthorizeUrl(appId: string): string {
+  return `${PUBLIC_URL}/login/facebook?app=${encodeURIComponent(appId)}`;
+}
+
+export function loginTokenEndpoint(): string {
+  return `${PUBLIC_URL}/api/login/facebook/token`;
+}
+
 export function instagramCredsFor(app: MetaApp): { id: string; secret: string } {
   return {
     id: app.instagramAppId || app.appId,
@@ -113,10 +130,14 @@ export function toPublicApp(app: MetaApp): MetaAppPublic {
     forwards: app.forwards || [],
     storeEvents: app.storeEvents !== false,
     embedEnabled: app.embedEnabled === true,
+    loginEnabled: app.loginEnabled === true,
+    loginRedirectUris: app.loginRedirectUris || [],
+    hasLoginApiSecret: !!app.loginApiSecret,
     channelCount: store.countChannelsByApp(app.id),
     createdAt: app.createdAt,
     webhookUrls: appWebhookUrls(app.id),
     redirectUri: appRedirectUri(),
+    loginUrls: { authorize: loginAuthorizeUrl(app.id), token: loginTokenEndpoint() },
   };
 }
 
@@ -155,6 +176,9 @@ export function seedAppFromEnvIfEmpty(makeId: () => string): void {
     forwards: [],
     storeEvents: true,
     embedEnabled: false,
+    loginEnabled: false,
+    loginRedirectUris: [],
+    loginApiSecret: "",
     createdAt: now,
   });
   console.log("[config] seeded app from environment (META_APP_ID present, no apps existed).");

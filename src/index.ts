@@ -43,6 +43,7 @@ import {
   instagramCredsFor,
   appWebhookUrls,
   appRedirectUri,
+  loginCallbackUri,
   seedAppFromEnvIfEmpty,
 } from "./config";
 import {
@@ -51,6 +52,9 @@ import {
   passwordMatches,
   encodeState,
   decodeState,
+  encodeLoginState,
+  decodeLoginState,
+  secretMatches,
   verifyWebhookSignature,
   newId,
 } from "./security";
@@ -78,6 +82,8 @@ app.use(cors());
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false });
 const webhookLimiter = rateLimit({ windowMs: 60 * 1000, max: 2000, standardHeaders: true, legacyHeaders: false });
+const fbLoginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false });
+const fbLoginTokenLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function toPublicChannel(c: Channel): ChannelPublic {
@@ -169,6 +175,24 @@ function sanitizeForwards(input: any): ForwardDest[] {
   return out;
 }
 
+/** Allow-list of external callback URLs for the Facebook Login flow. Requires
+ *  https (or http://localhost for local testing) — an open redirect here would
+ *  let an attacker redirect the one-time login code to their own server. */
+function sanitizeRedirectUris(input: any): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    if (typeof raw !== "string") continue;
+    const url = raw.trim().replace(/\/$/, "");
+    if (!url || seen.has(url)) continue;
+    if (!/^https:\/\//i.test(url) && !/^http:\/\/localhost(:\d+)?(\/.*)?$/i.test(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC bootstrap + login
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,6 +250,9 @@ app.post("/api/apps", apiLimiter, requireAdmin, (req: Request, res: Response) =>
     forwards: sanitizeForwards(b.forwards),
     storeEvents: b.storeEvents !== false,
     embedEnabled: b.embedEnabled === true,
+    loginEnabled: b.loginEnabled === true,
+    loginRedirectUris: sanitizeRedirectUris(b.loginRedirectUris),
+    loginApiSecret: typeof b.loginApiSecret === "string" ? b.loginApiSecret.trim() : "",
     createdAt: now,
   };
   store.addApp(created);
@@ -253,6 +280,11 @@ app.put("/api/apps/:id", apiLimiter, requireAdmin, (req: Request, res: Response)
   if (b.forwards !== undefined) patch.forwards = sanitizeForwards(b.forwards);
   if (typeof b.storeEvents === "boolean") patch.storeEvents = b.storeEvents;
   if (typeof b.embedEnabled === "boolean") patch.embedEnabled = b.embedEnabled;
+  if (typeof b.loginEnabled === "boolean") patch.loginEnabled = b.loginEnabled;
+  if (b.loginRedirectUris !== undefined) patch.loginRedirectUris = sanitizeRedirectUris(b.loginRedirectUris);
+  if (typeof b.loginApiSecret === "string" && b.loginApiSecret.trim()) {
+    patch.loginApiSecret = b.loginApiSecret.trim() === "__clear__" ? "" : b.loginApiSecret.trim();
+  }
   const updated = store.updateApp(req.params.id, patch);
   res.json({ app: toPublicApp(updated!) });
 });
@@ -697,6 +729,91 @@ app.post("/api/connect/messenger/exchange", apiLimiter, async (req: Request, res
     console.error("[connect/messenger] error:", err?.message || err);
     res.status(500).json({ error: "server_error" });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FACEBOOK LOGIN — OAuth proxy so external sites (WHMCS, etc.) can offer
+// "Login with Facebook" without holding their own Facebook App credentials.
+// Flow: site redirects the browser here → Facebook's OAuth dialog → hub's
+// callback resolves the profile → hub redirects back to the site with a
+// one-time code → the site's backend exchanges that code (server-to-server,
+// with the app's login secret) for the profile. Gated by app.loginEnabled.
+// ─────────────────────────────────────────────────────────────────────────────
+app.get("/login/facebook", fbLoginLimiter, (req: Request, res: Response) => {
+  const appId = String(req.query.app || "");
+  const lang = normalizeLang(req.query.lang as string);
+  const appCfg = store.findApp(appId);
+  if (!appCfg || !appCfg.loginEnabled) {
+    return renderResultPage(res, false, lang, "result.unavailableTitle", "result.unavailableMsg");
+  }
+  if (!appCfg.appId || !appCfg.appSecret) {
+    return renderResultPage(res, false, lang, "result.appNotConfiguredTitle", "result.appNoSecretMsg");
+  }
+  const redirectUri = String(req.query.redirect_uri || "").trim().replace(/\/$/, "");
+  if (!redirectUri || !(appCfg.loginRedirectUris || []).includes(redirectUri)) {
+    return renderResultPage(res, false, lang, "result.invalidRedirectTitle", "result.invalidRedirectMsg");
+  }
+  const siteState = String(req.query.state || "");
+  const state = encodeLoginState(appCfg.id, redirectUri, siteState, lang);
+  const authUrl =
+    `https://www.facebook.com/${appCfg.apiVersion}/dialog/oauth` +
+    `?client_id=${encodeURIComponent(appCfg.appId)}` +
+    `&redirect_uri=${encodeURIComponent(loginCallbackUri())}` +
+    `&response_type=code` +
+    `&scope=${encodeURIComponent("public_profile,email")}` +
+    `&state=${encodeURIComponent(state)}`;
+  res.redirect(authUrl);
+});
+
+app.get("/login/facebook/callback", async (req: Request, res: Response) => {
+  const { code, state, error, error_description } = req.query as Record<string, string>;
+  const decoded = decodeLoginState(String(state || ""));
+  const lang = normalizeLang((decoded && decoded.lang) || (req.query.lang as string));
+  if (!decoded) return renderResultPage(res, false, lang, "result.invalidSessionTitle", "result.stateMissingMsg");
+  const appCfg = store.findApp(decoded.appId);
+  if (!appCfg || !appCfg.loginEnabled) return renderResultPage(res, false, lang, "result.unavailableTitle", "result.unavailableMsg");
+
+  // decoded.redirectUri was checked against the app's allow-list before it was
+  // signed into the state above, so redirecting the browser back to it here is
+  // safe — an attacker cannot forge or tamper with a valid signed state.
+  const backToSite = (params: Record<string, string>): void => {
+    const u = new URL(decoded.redirectUri);
+    for (const k of Object.keys(params)) if (params[k]) u.searchParams.set(k, params[k]);
+    if (decoded.siteState) u.searchParams.set("state", decoded.siteState);
+    res.redirect(u.toString());
+  };
+
+  if (error) return backToSite({ error, error_description: error_description || "" });
+  if (!code) return backToSite({ error: "missing_code" });
+
+  try {
+    const token = await meta.exchangeCodeForToken(code, appCfg.appId, appCfg.appSecret, loginCallbackUri(), appCfg.apiVersion);
+    if (!token.access_token) return backToSite({ error: token.error?.message || "token_exchange_failed" });
+    const profile = await meta.getFacebookProfile(token.access_token, appCfg.apiVersion);
+    if (!profile) return backToSite({ error: "profile_fetch_failed" });
+    const loginCode = store.createLoginCode(appCfg.id, profile);
+    console.log(`[login/facebook] app=${appCfg.id} user=${profile.id} → ${decoded.redirectUri}`);
+    return backToSite({ code: loginCode });
+  } catch (err: any) {
+    console.error("[login/facebook] error:", err?.message || err);
+    return backToSite({ error: "server_error" });
+  }
+});
+
+// Server-to-server: the external site's backend exchanges the one-time code
+// from the redirect above for the actual profile. Auth is the app's own login
+// secret (X-Login-Secret header) — never the panel's admin session.
+app.post("/api/login/facebook/token", fbLoginTokenLimiter, (req: Request, res: Response) => {
+  const { appId, code } = req.body as Record<string, any>;
+  const secret = String(req.headers["x-login-secret"] || "");
+  const appCfg = store.findApp(String(appId || ""));
+  if (!appCfg || !appCfg.loginEnabled) return res.status(404).json({ error: "APP_NOT_FOUND" });
+  if (!appCfg.loginApiSecret || !secretMatches(secret, appCfg.loginApiSecret)) {
+    return res.status(401).json({ error: "UNAUTHORIZED" });
+  }
+  const profile = store.consumeLoginCode(String(code || ""), appCfg.id);
+  if (!profile) return res.status(400).json({ error: "INVALID_OR_EXPIRED_CODE" });
+  res.json({ ok: true, user: profile });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

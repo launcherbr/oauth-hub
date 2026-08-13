@@ -527,6 +527,22 @@
     return '<div class="embed-block"><div class="fwd-title">' + esc(t("embed.title")) + "</div>" +
       '<div class="hint" style="margin-bottom:.5rem">' + t("embed.hint") + "</div>" + rows + "</div>";
   }
+  function loginSection(a) {
+    if (!a.loginEnabled) return "";
+    var authorizeTpl = a.loginUrls.authorize + "&redirect_uri=SEU_CALLBACK&state=SEU_STATE";
+    var redirects = (a.loginRedirectUris && a.loginRedirectUris.length)
+      ? a.loginRedirectUris.map(function (u) { return "<code>" + esc(u) + "</code>"; }).join(" ")
+      : '<span class="sub" style="color:var(--muted-2)">' + esc(t("apps.loginNoRedirects")) + "</span>";
+    return '<div class="embed-block"><div class="fwd-title">' + esc(t("apps.loginTitle")) + "</div>" +
+      '<div class="hint" style="margin-bottom:.5rem">' + t("apps.loginHint") + "</div>" +
+      '<div class="url-box"><span class="lbl">' + esc(t("apps.loginAuthorize")) + '</span><code>' + esc(authorizeTpl) + "</code>" +
+        '<button class="btn secondary copy tiny" data-copy-text="' + escAttr(authorizeTpl) + '">' + esc(t("apps.copy")) + "</button></div>" +
+      '<div class="url-box"><span class="lbl">' + esc(t("apps.loginToken")) + '</span><code>' + esc(a.loginUrls.token) + "</code>" +
+        '<button class="btn secondary copy tiny" data-copy-text="' + escAttr(a.loginUrls.token) + '">' + esc(t("apps.copy")) + "</button></div>" +
+      '<div class="sub" style="margin-top:.4rem">' + esc(t("apps.loginRedirects")) + ": " + redirects + "</div>" +
+      '<div class="hint" style="margin-top:.4rem">' + t("apps.loginTokenHint") + "</div>" +
+    "</div>";
+  }
   function forwardsSummary(fwds) {
     if (!fwds || !fwds.length) return '<span class="sub" style="color:var(--muted-2)">' + esc(t("apps.noForward")) + "</span>";
     return fwds.map(function (f) {
@@ -543,10 +559,11 @@
         ? '<span class="badge ok">' + esc(t("apps.badgeHistory")) + "</span>"
         : '<span class="badge warn" title="' + escAttr(t("apps.badgeTransactionalTitle")) + '">' + esc(t("apps.badgeTransactional")) + "</span>";
       var embedBadge = a.embedEnabled ? ' <span class="badge messenger">' + esc(t("apps.badgeEmbed")) + "</span>" : "";
+      var loginBadge = a.loginEnabled ? ' <span class="badge waba">' + esc(t("apps.badgeLogin")) + "</span>" : "";
       var coll = appCollapsed.hasOwnProperty(a.id) ? appCollapsed[a.id] : (apps.length >= 3);
       return '<div class="app-card' + (coll ? " collapsed" : "") + '">' +
         '<div class="app-head">' +
-          '<div class="app-title"><span class="app-name">' + esc(a.name) + '</span> <span class="badge neutral">' + a.channelCount + " " + esc(t("apps.channelsSuffix")) + "</span> " + modeBadge + embedBadge + "</div>" +
+          '<div class="app-title"><span class="app-name">' + esc(a.name) + '</span> <span class="badge neutral">' + a.channelCount + " " + esc(t("apps.channelsSuffix")) + "</span> " + modeBadge + embedBadge + loginBadge + "</div>" +
           '<div class="app-head-actions"><button class="btn secondary tiny" data-editapp="' + escAttr(a.id) + '">' + esc(t("apps.edit")) + "</button>" +
           '<button class="btn danger tiny" data-delapp="' + escAttr(a.id) + '">' + esc(t("apps.remove")) + "</button>" +
           '<button class="btn ghost icon-btn tiny app-toggle" data-toggleapp="' + escAttr(a.id) + '" aria-expanded="' + (coll ? "false" : "true") + '" title="' + escAttr(t("apps.toggle")) + '">' + icon("chevron") + "</button></div>" +
@@ -559,6 +576,7 @@
           '<div class="url-box"><span class="lbl">' + esc(t("apps.igRedirect")) + '</span><code>' + esc(a.redirectUri) + '</code><button class="btn secondary copy tiny" data-copy-text="' + escAttr(a.redirectUri) + '">' + esc(t("apps.copy")) + "</button></div>" +
           '<div class="fwd-summary">' + forwardsSummary(a.forwards) + "</div>" +
           embedSection(a) +
+          loginSection(a) +
         "</div>" +
       "</div>";
     }).join("");
@@ -647,6 +665,15 @@
         '<div class="hint">' + t("form.storeHint") + "</div>" +
         '<label class="mode-toggle" style="margin-top:.7rem"><input type="checkbox" id="afEmbed"' + (app.embedEnabled ? " checked" : "") + " /> <b>" + esc(t("form.embedToggle")) + "</b></label>" +
         '<div class="hint">' + esc(t("form.embedHint")) + "</div>" +
+        '<label class="mode-toggle" style="margin-top:.7rem"><input type="checkbox" id="afLoginEnabled"' + (app.loginEnabled ? " checked" : "") + " /> <b>" + esc(t("form.loginToggle")) + "</b></label>" +
+        '<div class="hint">' + esc(t("form.loginHint")) + "</div>" +
+      "</div>" +
+      '<div class="fwd-block" id="afLoginBlock" style="' + (app.loginEnabled ? "" : "display:none") + '">' +
+        '<div class="field"><label for="afLoginRedirects">' + esc(t("form.loginRedirects")) + "</label>" +
+          '<textarea id="afLoginRedirects" rows="3" placeholder="' + escAttr(t("form.loginRedirectsPh")) + '">' + esc((app.loginRedirectUris || []).join("\n")) + "</textarea>" +
+          '<div class="hint">' + esc(t("form.loginRedirectsHint")) + "</div></div>" +
+        field("afLoginSecret", "form.loginSecret", null, app.hasLoginApiSecret ? "form.secretKeep" : "form.loginSecretPh", "password") +
+        '<div class="hint">' + esc(t("form.loginSecretHint")) + "</div>" +
       "</div>" +
       '<div class="fwd-block">' +
         '<div class="fwd-title">' + esc(t("form.fwdTitle")) + "</div>" +
@@ -667,6 +694,7 @@
     $("afClose").addEventListener("click", closeDrawer);
     $("afCancel").addEventListener("click", closeDrawer);
     $("afAddFwd").addEventListener("click", function () { $("afForwards").insertAdjacentHTML("beforeend", fwdRowHtml(null)); wireFwdDeletes(); });
+    $("afLoginEnabled").addEventListener("change", function () { $("afLoginBlock").style.display = this.checked ? "" : "none"; });
     $("afSave").addEventListener("click", function () { saveApp(isEdit ? app.id : null); });
     wireFwdDeletes();
     document.addEventListener("keydown", drawerKeydown);
@@ -688,10 +716,14 @@
     };
     var storeEl = $("afStore"); if (storeEl) body.storeEvents = storeEl.checked;
     var embedEl = $("afEmbed"); if (embedEl) body.embedEnabled = embedEl.checked;
+    var loginEl = $("afLoginEnabled"); if (loginEl) body.loginEnabled = loginEl.checked;
+    var loginRedirEl = $("afLoginRedirects");
+    if (loginRedirEl) body.loginRedirectUris = loginRedirEl.value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
     if ($("afAppSecret").value) body.appSecret = $("afAppSecret").value;
     if ($("afIgSecret").value) body.instagramAppSecret = $("afIgSecret").value;
     if ($("afMsgrToken") && $("afMsgrToken").value.trim()) body.messengerFallbackToken = $("afMsgrToken").value.trim();
     if ($("afVerify").value) body.webhookVerifyToken = $("afVerify").value;
+    if ($("afLoginSecret") && $("afLoginSecret").value) body.loginApiSecret = $("afLoginSecret").value;
     if (!body.name.trim()) { toast(t("form.nameRequired"), true); return; }
     if (!body.appId.trim()) { toast(t("form.appIdRequired"), true); return; }
     $("afSave").disabled = true;

@@ -19,6 +19,7 @@ Não valida licença e não depende de nenhum backend externo. Guarda os apps, c
 - **Roteamento / encaminhamento** — cada app pode repassar seus webhooks para uma ou mais URLs ("outros pontos"), com filtro por produto. POST com o corpo original + cabeçalho `X-Hub-App` (e `X-Hub-Signature-256`, quando houver).
 - **Modo histórico × transacional** — por app, escolha **salvar histórico** no painel ou apenas **encaminhar** (ponta a ponta) sem guardar nada.
 - **Botões de embed** — gere um botão de conexão para colar **fora do painel** (em qualquer site), por app/canal.
+- **Login com Facebook (para sites externos)** — cada app pode virar um **proxy de OAuth** para autenticação: um site externo (WHMCS, outro CMS, etc.) redireciona o visitante para o hub, que conduz o diálogo do Facebook e devolve um **código de uso único**; o backend do site troca esse código pelo perfil (`id`, `name`, `email`, `picture`) chamando a API do hub com um segredo próprio do app. Nenhuma credencial da Meta precisa existir no site externo.
 - **Segurança** — App Secret só no servidor; tokens de canal nunca vão ao navegador; webhooks verificados por `X-Hub-Signature-256`; painel protegido por senha (opcional).
 - **Painel "Mission Control"** — **visão geral** (KPIs + gráfico de atividade da última hora + mix de canais), **console ao vivo** das interações (filtros, busca, payload com realce de sintaxe, som opcional), **canais como health cards** (status do webhook + sparkline), **command palette** (`Ctrl`/`⌘`+`K`), **tema claro/escuro**, layout **responsivo (mobile)** e **i18n** (pt / en / es).
 - **Canal do YouTube configurável** — defina o canal, playlist ou vídeo do YouTube exibido na aba Guia direto pelo painel, sem alterar código.
@@ -96,6 +97,23 @@ Coloque o serviço atrás de **HTTPS** — a Meta exige HTTPS para OAuth e webho
 
 ---
 
+## Login com Facebook (WHMCS, sites externos)
+
+Além de conectar canais, um app pode ser usado como **provedor de "Login com Facebook"** para qualquer site — sem que esse site precise ter seu próprio App da Meta. Isso é diferente da conexão de canais: aqui quem inicia o fluxo é um **visitante do site**, e o resultado é a identidade dele (não um canal de mensageria).
+
+**1. Habilite no app** (aba Apps → editar → "Permitir Login com Facebook"), cadastre os **callbacks permitidos** (URLs do site externo que podem receber o retorno — exige HTTPS) e gere um **segredo de API do login** (compartilhado só com o backend do site).
+
+**2. No App Dashboard da Meta**, adicione `https://SEU_DOMINIO/login/facebook/callback` como Redirect URI válida do produto Facebook Login, e a permissão `email` (requer App Review para ir a produção; em modo de desenvolvimento funciona para os usuários de teste/admins do app).
+
+**3. Fluxo (authorization code, dois saltos):**
+1. O site redireciona o navegador para `GET /login/facebook?app=<idDoApp>&redirect_uri=<callbackDoSite>&state=<state>` (URL exibida no card do app).
+2. O hub conduz o diálogo OAuth do Facebook e, ao final, redireciona o navegador de volta para `<callbackDoSite>?code=<códigoDeUsoÚnico>&state=<state>` (ou `?error=...` se algo falhar).
+3. O **backend** do site troca esse código pelo perfil chamando `POST /api/login/facebook/token` com corpo `{ "appId": "<idDoApp>", "code": "<código>" }` e o cabeçalho `X-Login-Secret: <segredo do app>`. Resposta: `{ "ok": true, "user": { "id", "name", "email", "picture" } }`.
+
+O código de uso único expira em ~2 minutos e só pode ser trocado uma vez — o perfil nunca trafega pela URL do navegador nem fica em logs de acesso.
+
+---
+
 ## Endpoints (visão geral)
 
 **Painel / admin** (exigem sessão quando há `ADMIN_PASSWORD`)
@@ -112,6 +130,10 @@ Coloque o serviço atrás de **HTTPS** — a Meta exige HTTPS para OAuth e webho
 
 **Embed (público, sem auth — gated por `embedEnabled` do app)**
 - `GET /embed/connect?app=<id>&channel=<waba|messenger|instagram>` → abre a conexão daquele app.
+
+**Login com Facebook (público — gated por `loginEnabled` do app)**
+- `GET /login/facebook?app=<id>&redirect_uri=<callbackDoSite>&state=<state>` · `GET /login/facebook/callback`
+- `POST /api/login/facebook/token` (body `{ appId, code }`, header `X-Login-Secret`) — troca o código pelo perfil.
 
 **Webhooks (a Meta chama)**
 - `GET|POST /webhook/app/:appKey` (+ `/:product`) — por app (recomendado)

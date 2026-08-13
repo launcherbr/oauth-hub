@@ -23,7 +23,7 @@
 import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
 import { SESSION_SECRET, ADMIN_PASSWORD } from "./config";
-import { ChannelType, OAuthState } from "./types";
+import { ChannelType, OAuthState, LoginState } from "./types";
 
 function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -77,6 +77,24 @@ export function decodeState(token: string): OAuthState | null {
   return { channel: data.channel, appId: data.appId, lang: data.lang || "pt", nonce: data.nonce, iat: data.iat };
 }
 
+// ─── Login state (CSRF protection for the "Login with Facebook" flow) ─────────
+// Short-lived: the browser round-trip through Facebook's dialog is quick, and a
+// long TTL only widens the window for a stolen/leaked state value.
+
+const LOGIN_STATE_TTL_MS = 10 * 60 * 1000; // 10 min
+
+export function encodeLoginState(appId: string, redirectUri: string, siteState: string, lang: string): string {
+  return makeToken({ appId, redirectUri, siteState: siteState || "", lang: lang || "pt", nonce: crypto.randomBytes(8).toString("hex") });
+}
+
+export function decodeLoginState(token: string): LoginState | null {
+  const data = verifyToken<LoginState>(token, LOGIN_STATE_TTL_MS);
+  if (!data) return null;
+  if (!data.appId || typeof data.appId !== "string") return null;
+  if (!data.redirectUri || typeof data.redirectUri !== "string") return null;
+  return { appId: data.appId, redirectUri: data.redirectUri, siteState: data.siteState || "", lang: data.lang || "pt", nonce: data.nonce, iat: data.iat };
+}
+
 // ─── Panel session token ──────────────────────────────────────────────────────
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
@@ -94,6 +112,15 @@ export function passwordMatches(input: string): boolean {
   if (!ADMIN_PASSWORD) return true; // auth disabled
   const a = Buffer.from(String(input || ""));
   const b = Buffer.from(ADMIN_PASSWORD);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+/** Constant-time compare of two arbitrary secrets (e.g. the per-app login API secret). */
+export function secretMatches(input: string, expected: string): boolean {
+  if (!expected) return false;
+  const a = Buffer.from(String(input || ""));
+  const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
 }

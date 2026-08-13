@@ -465,6 +465,30 @@ export async function exchangeInstagramCode(
   };
 }
 
+// ─── Facebook Login (site authentication, e.g. WHMCS/other sites) ────────────
+
+/**
+ * Resolve the authenticated user's public profile after a Facebook Login code
+ * exchange. `email` is only present when the user granted the `email`
+ * permission (and has a verified email on file with Facebook).
+ */
+export async function getFacebookProfile(
+  token: string,
+  apiVersion: string
+): Promise<{ id: string; name: string; email?: string; picture?: string } | null> {
+  const url = new URL(`${FB_GRAPH}/${apiVersion}/me`);
+  url.searchParams.set("fields", "id,name,email,picture.type(large)");
+  url.searchParams.set("access_token", token);
+  const data = await getJson(url.toString());
+  if (!data || data.error || !data.id) return null;
+  return {
+    id: String(data.id),
+    name: data.name || "",
+    email: data.email || undefined,
+    picture: data.picture?.data?.url || undefined,
+  };
+}
+
 /** Subscribe the app to an Instagram account's webhooks (Instagram Login). */
 export async function subscribeInstagramApp(
   igUserToken: string
